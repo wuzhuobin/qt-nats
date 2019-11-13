@@ -19,7 +19,8 @@ namespace Nats
     #define DEBUG(x) do { if (_debug_mode) { qDebug() << x; } } while (0)
 
     //! main callback message
-    using MessageCallback = std::function<void(QString &&message, QString &&inbox, QString &&subject)>;
+    using StringMessageCallback = std::function<void(QString &&message, QString &&inbox, QString &&subject)>;
+    using MessageCallback = std::function<void(QByteArray &&message, QString &&inbox, QString &&subject)>;
     using ConnectCallback = std::function<void()>;
 
     //!
@@ -52,9 +53,10 @@ namespace Nats
 
     public:
         explicit Subscription(QObject *parent = nullptr): QObject(parent) {}
+        QString getMessage() { return QString::fromUtf8(this->message); }
 
         QString subject;
-        QString message;
+        QByteArray message;
         QString inbox;
         uint64_t ssid = 0;
 
@@ -77,6 +79,7 @@ namespace Nats
         //! \param subject
         //! \param message
         //! publish given message with subject
+        void publish(const QString &subject, const QByteArray &message, const QString &inbox);
         void publish(const QString &subject, const QString &message, const QString &inbox);
         void publish(const QString &subject, const QString &message = "");
 
@@ -88,6 +91,7 @@ namespace Nats
         //! subscribe to given subject
         //! when message is received, callback is fired
         uint64_t subscribe(const QString &subject, MessageCallback callback);
+        uint64_t subscribe(const QString &subject, StringMessageCallback callback);
 
         //!
         //! \brief subscribe
@@ -100,13 +104,14 @@ namespace Nats
         //! when message is received, callback is fired
         //! each message will be delivered to only one subscriber per queue group
         uint64_t subscribe(const QString &subject, const QString &queue, MessageCallback callback);
+        uint64_t subscribe(const QString &subject, const QString &queue, StringMessageCallback callback);
 
         //!
         //! \brief subscribe
         //! \param subject
         //! \return
         //! return subscription class holding result for signal/slot version
-        Subscription *subscribe(const QString &subject);
+        Subscription *subscribe(const QString &subject, QObject *parent = nullptr);
 
         //!
         //! \brief unsubscribe
@@ -121,6 +126,10 @@ namespace Nats
         //! \param message
         //! \return
         //! make request using given subject and optional message
+        uint64_t request(const QString subject, const QByteArray message, StringMessageCallback callback);
+        uint64_t request(const QString subject, const QString message, StringMessageCallback callback);
+        uint64_t request(const QString subject, StringMessageCallback callback);
+        uint64_t request(const QString subject, const QByteArray message, MessageCallback callback);
         uint64_t request(const QString subject, const QString message, MessageCallback callback);
         uint64_t request(const QString subject, MessageCallback callback);
 
@@ -239,59 +248,59 @@ namespace Nats
 
     inline void Client::connect(const QString &host, quint16 port, ConnectCallback callback)
     {
-        connect(host, port, m_options, callback);
+        this->connect(host, port, this->m_options, callback);
     }
 
     inline void Client::connect(const QString &host, quint16 port, const Options &options, ConnectCallback callback)
     {
         // Check is client socket is already connected and return if it is
-        if (m_socket.isOpen())
+        if (this->m_socket.isOpen())
             return;
 
-        QObject::connect(&m_socket, static_cast<void(QAbstractSocket::*)(QAbstractSocket::SocketError)>(&QAbstractSocket::error), [this](QAbstractSocket::SocketError socketError)
+        QObject::connect(&this->m_socket, static_cast<void(QAbstractSocket::*)(QAbstractSocket::SocketError)>(&QAbstractSocket::error), [this](QAbstractSocket::SocketError socketError)
         {
             DEBUG(socketError);
 
-            emit error(m_socket.errorString());
+            emit this->error(this->m_socket.errorString());
         });
 
-        QObject::connect(&m_socket, static_cast<void(QSslSocket::*)(const QList<QSslError> &)>(&QSslSocket::sslErrors),[this](const QList<QSslError> &errors)
+        QObject::connect(&this->m_socket, static_cast<void(QSslSocket::*)(const QList<QSslError> &)>(&QSslSocket::sslErrors),[this](const QList<QSslError> &errors)
         {
             DEBUG(errors);
 
-            emit error(m_socket.errorString());
+            emit this->error(this->m_socket.errorString());
         });
 
-        QObject::connect(&m_socket, &QSslSocket::encrypted, [this, options, callback]
+        QObject::connect(&this->m_socket, &QSslSocket::encrypted, [this, options, callback]
         {
             DEBUG("SSL/TLS successful");
 
-            send_info(options);
-            set_listeners();
+            this->send_info(options);
+            this->set_listeners();
 
             if(callback)
                 callback();
 
-            emit connected();
+            emit this->connected();
         });
 
-        QObject::connect(&m_socket, &QSslSocket::disconnected, [this]()
+        QObject::connect(&this->m_socket, &QSslSocket::disconnected, [this]()
         {
             DEBUG("socket disconnected");
-            emit disconnected();
+            emit this->disconnected();
 
             // Disconnect everything connected to an m_socket's signals
-            QObject::disconnect(&m_socket, nullptr, nullptr, nullptr);
+            QObject::disconnect(&this->m_socket, nullptr, nullptr, nullptr);
         });
 
         // receive first info message and disconnect
         auto signal = std::make_shared<QMetaObject::Connection>();
-        *signal = QObject::connect(&m_socket, &QSslSocket::readyRead, [this, signal, options, callback]
+        *signal = QObject::connect(&this->m_socket, &QSslSocket::readyRead, [this, signal, options, callback]
         {
             QObject::disconnect(*signal);
-            QByteArray info_message = m_socket.readAll();
+            QByteArray info_message = this->m_socket.readAll();
 
-            QJsonObject json = parse_info(info_message);
+            QJsonObject json = this->parse_info(info_message);
             bool ssl_required = json.value(QStringLiteral("ssl_required")).toBool();
 
             // if client or server wants ssl start encryption
@@ -300,49 +309,49 @@ namespace Nats
                 DEBUG("starting SSL/TLS encryption");
 
                 if(!options.ssl_verify)
-                    m_socket.setPeerVerifyMode(QSslSocket::VerifyNone);
+                    this->m_socket.setPeerVerifyMode(QSslSocket::VerifyNone);
 
                 if(!options.ssl_ca.isEmpty())
                 {
-                    QSslConfiguration config = m_socket.sslConfiguration();
+                    QSslConfiguration config = this->m_socket.sslConfiguration();
                     config.setCaCertificates(QSslCertificate::fromPath(options.ssl_ca));
                 }
 
                 if(!options.ssl_key.isEmpty())
-                    m_socket.setPrivateKey(options.ssl_key);
+                    this->m_socket.setPrivateKey(options.ssl_key);
 
                 if(!options.ssl_cert.isEmpty())
-                    m_socket.setLocalCertificate(options.ssl_cert);
+                    this->m_socket.setLocalCertificate(options.ssl_cert);
 
-                m_socket.startClientEncryption();
+                this->m_socket.startClientEncryption();
             }
             else
             {
-                send_info(options);
-                set_listeners();
+                this->send_info(options);
+                this->set_listeners();
 
                 if(callback)
                     callback();
 
-                emit connected();
+                emit this->connected();
             }
         });
 
 
         DEBUG("connect started" << host << port);
 
-        m_socket.connectToHost(host, port);
+        this->m_socket.connectToHost(host, port);
     }
 
     inline void Client::disconnect()
     {
-        m_socket.flush();
-        m_socket.close();
+        this->m_socket.flush();
+        this->m_socket.close();
     }
 
     inline bool Client::connectSync(const QString &host, quint16 port)
     {
-        return connectSync(host, port, m_options);
+        return this->connectSync(host, port, m_options);
     }
 
     inline bool Client::connectSync(const QString &host, quint16 port, const Options &options)
@@ -351,20 +360,20 @@ namespace Nats
         {
             DEBUG(socketError);
 
-            emit error(m_socket.errorString());
+            emit this->error(this->m_socket.errorString());
         });
 
-        m_socket.connectToHost(host, port);
-        if(!m_socket.waitForConnected())
+        this->m_socket.connectToHost(host, port);
+        if(!this->m_socket.waitForConnected())
             return false;
 
-        if(!m_socket.waitForReadyRead())
+        if(!this->m_socket.waitForReadyRead())
             return false;
 
         // receive first info message
-        auto info_message = m_socket.readAll();
+        auto info_message = this->m_socket.readAll();
 
-        QJsonObject json = parse_info(info_message);
+        QJsonObject json = this->parse_info(info_message);
         bool ssl_required = json.value(QStringLiteral("ssl_required")).toBool();
 
         // if client or server wants ssl start encryption
@@ -373,30 +382,30 @@ namespace Nats
             DEBUG("starting SSL/TLS encryption");
 
             if(!options.ssl_verify)
-                m_socket.setPeerVerifyMode(QSslSocket::VerifyNone);
+                this->m_socket.setPeerVerifyMode(QSslSocket::VerifyNone);
 
             if(!options.ssl_ca.isEmpty())
             {
-                QSslConfiguration config = m_socket.sslConfiguration();
+                QSslConfiguration config = this->m_socket.sslConfiguration();
                 config.setCaCertificates(QSslCertificate::fromPath(options.ssl_ca));
             }
 
             if(!options.ssl_key.isEmpty())
-                m_socket.setPrivateKey(options.ssl_key);
+                this->m_socket.setPrivateKey(options.ssl_key);
 
             if(!options.ssl_cert.isEmpty())
-                m_socket.setLocalCertificate(options.ssl_cert);
+                this->m_socket.setLocalCertificate(options.ssl_cert);
 
-            m_socket.startClientEncryption();
+            this->m_socket.startClientEncryption();
 
-            if(!m_socket.waitForEncrypted())
+            if(!this->m_socket.waitForEncrypted())
                 return false;
         }
 
-        send_info(options);
-        set_listeners();
+        this->send_info(options);
+        this->set_listeners();
 
-        emit connected();
+        emit this->connected();
 
         return true;
     }
@@ -417,7 +426,7 @@ namespace Nats
 
         DEBUG("send info message:" << message);
 
-        m_socket.write(message.toUtf8());
+        this->m_socket.write(message.toUtf8());
     }
 
     inline QJsonObject Client::parse_info(const QByteArray &message)
@@ -430,41 +439,64 @@ namespace Nats
 
     inline void Client::publish(const QString &subject, const QString &message)
     {
-        publish(subject, message, "");
+        this->publish(subject, message, "");
     }
 
     inline void Client::publish(const QString &subject, const QString &message, const QString &inbox)
     {
-        QString body = QStringLiteral("PUB ") % subject % " " % inbox % (inbox.isEmpty() ? "" : " ") % QString::number(message.toUtf8().length()) % CLRF % message % CLRF;
+        this->publish(subject, message.toUtf8(), inbox);
+    }
+
+    inline void Client::publish(const QString &subject, const QByteArray &message, const QString &inbox)
+    {
+        QString body = QStringLiteral("PUB ") % subject % " " % inbox % (inbox.isEmpty() ? "" : " ") % QString::number(message.length()) % CLRF % message % CLRF;
 
         DEBUG("published:" << body);
 
-        m_socket.write(body.toUtf8());
+        this->m_socket.write(body.toUtf8());
+    }
+
+    inline uint64_t Client::subscribe(const QString &subject, StringMessageCallback callback)
+    {
+        MessageCallback mCallback = 
+          [callback](QByteArray &&message, QString &&inbox, QString &&subject) {
+            callback(QString::fromUtf8(message), QString(inbox), QString(subject));
+          };
+        return this->subscribe(subject, "", mCallback);
     }
 
     inline uint64_t Client::subscribe(const QString &subject, MessageCallback callback)
     {
-        return subscribe(subject, "", callback);
+        return this->subscribe(subject, "", callback);
     }
 
     inline uint64_t Client::subscribe(const QString &subject, const QString &queue, MessageCallback callback)
     {
-        m_callbacks[++m_ssid] = callback;
+        this->m_callbacks[++m_ssid] = callback;
 
         QString message = QStringLiteral("SUB ") % subject % " " % queue % (queue.isEmpty() ? "" : " ") % QString::number(m_ssid) % CLRF;
 
-        m_socket.write(message.toUtf8());
+        this->m_socket.write(message.toUtf8());
 
         DEBUG("subscribed:" << message);
 
         return m_ssid;
     }
 
-    inline Subscription *Client::subscribe(const QString &subject)
+    inline uint64_t Client::subscribe(const QString &subject, const QString &queue, StringMessageCallback callback)
     {
-        auto subscription = new Subscription;
+        MessageCallback mCallback = 
+          [callback](QByteArray &&message, QString &&inbox, QString &&subject) {
+            callback(QString::fromUtf8(message), QString(inbox), QString(subject));
+          };
+        return this->subscribe(subject, queue, mCallback);
+    }
 
-        subscription->ssid = subscribe(subject, "", [subscription](const QString &message, const QString &subject, const QString &inbox)
+    inline Subscription *Client::subscribe(const QString &subject, QObject *parent)
+    {
+        auto subscription = new Subscription(parent);
+
+        subscription->ssid = this->subscribe(subject, "", [subscription](const QByteArray &message, const QString &subject, const QString &inbox)
         {
             subscription->message = message;
             subscription->subject = subject;
@@ -482,20 +514,52 @@ namespace Nats
 
         DEBUG("unsubscribed:" << message);
 
-        m_socket.write(message.toUtf8());
+        this->m_socket.write(message.toUtf8());
+    }
+
+    inline uint64_t Client::request(const QString subject, StringMessageCallback callback)
+    {
+        MessageCallback mCallback = 
+          [callback](QByteArray &&message, QString &&inbox, QString &&subject) {
+            callback(QString::fromUtf8(message), QString(inbox), QString(subject));
+          };
+        return this->request(subject, QStringLiteral(""), mCallback);
+    }
+
+    inline uint64_t Client::request(const QString subject, const QString message, StringMessageCallback callback)
+    {
+        MessageCallback mCallback = 
+          [callback](QByteArray &&message, QString &&inbox, QString &&subject) {
+            callback(QString::fromUtf8(message), QString(inbox), QString(subject));
+          };
+        return this->request(subject, message.toUtf8(), mCallback);
+    }
+
+    inline uint64_t Client::request(const QString subject, const QByteArray message, StringMessageCallback callback)
+    {
+        MessageCallback mCallback = 
+          [callback](QByteArray &&message, QString &&inbox, QString &&subject) {
+            callback(QString::fromUtf8(message), QString(inbox), QString(subject));
+          };
+        return this->request(subject, message, mCallback);
     }
 
     inline uint64_t Client::request(const QString subject, MessageCallback callback)
     {
-        return request(subject, "", callback);
+        return this->request(subject, QStringLiteral(""), callback);
     }
 
     inline uint64_t Client::request(const QString subject, const QString message, MessageCallback callback)
     {
+        return this->request(subject, message.toUtf8(), callback);
+    }
+
+    inline uint64_t Client::request(const QString subject, const QByteArray message, MessageCallback callback)
+    {
         QString inbox = QUuid::createUuid().toString();
-        uint64_t ssid = subscribe(inbox, callback);
-        unsubscribe(ssid, 1);
-        publish(subject, message, inbox);
+        uint64_t ssid = this->subscribe(inbox, callback);
+        this->unsubscribe(ssid, 1);
+        this->publish(subject, message, inbox);
 
         return ssid;
     }
@@ -614,14 +678,14 @@ namespace Nats
             sid = &(parts[2]);
             uint64_t ssid = sid.toULong();
 
-            QString message(buffer.mid(current_pos, message_len));
+            QByteArray message = buffer.mid(current_pos, message_len);
             last_pos = current_pos + message_len + CLRF.length();
 
             DEBUG("message:" << message);
 
             // call correct subscription callback
-            if(m_callbacks.contains(ssid))
-                m_callbacks[ssid](QString(message), inbox.toString(), subject.toString());
+            if(this->m_callbacks.contains(ssid))
+                this->m_callbacks[ssid](QByteArray(message), inbox.toString(), subject.toString());
             else
                 qWarning() << "invalid callback";
         }
